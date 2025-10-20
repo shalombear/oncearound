@@ -1,0 +1,10 @@
+# Runtime
+fastapi
+uvicorn
+pydantic
+
+# Testing and coverage
+pytest
+pytest-asyncio
+pytest-cov
+httpx
