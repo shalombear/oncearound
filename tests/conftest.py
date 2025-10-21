@@ -1,13 +1,14 @@
+"""Configurational helper for testing"""
 import logging
 
 from pathlib import Path
-from collections.abc import Iterator
+from collections.abc import Iterator, AsyncIterator
+from contextlib import suppress
 
 import pytest
 import pytest_asyncio
 
 from httpx import AsyncClient
-from fastapi import FastAPI
 
 from infra import init_logging, get_logger
 from main import app
@@ -26,9 +27,9 @@ def test_logger(tmp_path: Path) -> logging.Logger:
 
 
 @pytest_asyncio.fixture
-async def client() -> AsyncClient:
+async def client() -> AsyncIterator[AsyncClient]:
     """Reusable asynchronous HTTP client bound to the FastAPI app."""
-    async with AsyncClient(app=app, base_url="http://test") as ac:
+    async with AsyncClient(app=app, base_url="http://test", timeout=10) as ac:
         yield ac
 
 @pytest.fixture(autouse=True, scope="session")
@@ -37,7 +38,7 @@ def cleanup_logging() -> Iterator[None]:
     yield
     root = logging.getLogger()
     for h in root.handlers[:]:
-        with contextlib.suppress(Exception):
+        with suppress(Exception):
             h.flush()
             h.close()
         root.removeHandler(h)
