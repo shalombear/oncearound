@@ -34,11 +34,28 @@ def _load_config(*, overrides: dict | None = None) -> dict:
 
     # deriving env-based keys, e.g. LOG_LEVEL -> level
     env_cfg = {key[4:].lower(): val for key, val in os.environ.items() if key.startswith("LOG_")}
-
     cfg.update(env_cfg)
 
     if overrides:
         cfg.update({k: v for k, v in overrides.items() if v is not None})
+
+    # validation and normalization
+    level_name = str(cfg["level"]).upper()
+    cfg["level"] = level_name if level_name in logging._nameToLevel else DEFAULT_LOG_LEVEL
+
+    cfg["log_path"] = str(Path(cfg["log_path"]).expanduser())
+
+    try:
+        cfg["rotate_size"] = max(1, int(cfg["rotate_size"]))
+    except (TypeError, ValueError):
+        cfg["rotate_size"] = DEFAULT_ROTATE_SIZE
+
+    try:
+        cfg["retention_count"] = max(1, int(cfg["retention_count"]))
+    except (TypeError, ValueError):
+        cfg["retention_count"] = DEFAULT_RETENTION_COUNT
+
+    cfg["encoding"] = cfg.get("encoding") or DEFAULT_ENCODING
 
     return cfg
 
