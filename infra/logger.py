@@ -6,23 +6,32 @@ import os
 import logging
 import json
 import atexit
-import contextvars
+from contextvars import ContextVar
 
-from logging.handlers import RotatingFileHandler
 from datetime import datetime, timezone
 from pathlib import Path
-
+from typing import Any, Final, Literal, Mapping, Optional, TypedDict
+from contextlib import suppress
 from pythonjsonlogger import jsonlogger
 
-DEFAULT_LOG_LEVEL = "INFO"
-DEFAULT_LOG_PATH = "./logs/app.log"
-DEFAULT_ROTATE_SIZE = 100 * 1024 * 1024  # 100 MB
-DEFAULT_RETENTION_COUNT = 10
-DEFAULT_ENCODING = "utf-8"
+Level = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 
-_context = contextvars.ContextVar("log_context", default={})
+class LoggerConfig(TypedDict):
+    level: Level
+    log_path: str
+    rotate_size: int
+    retention_count: int
+    encoding: str
 
-def _load_config(*, overrides: dict | None = None) -> dict:
+DEFAULT_LOG_LEVEL: Final[Level] = "INFO"
+DEFAULT_LOG_PATH: Final[str] = "./logs/app.log"
+DEFAULT_ROTATE_SIZE: Final[int] = 100 * 1024 * 1024
+DEFAULT_RETENTION_COUNT: Final[int] = 10
+DEFAULT_ENCODING: Final[str] = "utf-8"
+
+_context: ContextVar[dict[str, Any]] = ContextVar("log_context", default={})
+
+def _load_config(*, overrides: Optional[Mapping[str, Any]] = None) -> LoggerConfig:
     """Return merged logger configuration from defaults, env, and overrides."""
     cfg = {
         "level": DEFAULT_LOG_LEVEL,
@@ -58,4 +67,61 @@ def _load_config(*, overrides: dict | None = None) -> dict:
     cfg["encoding"] = cfg.get("encoding") or DEFAULT_ENCODING
 
     return cfg
+
+def init_logging(*, overrides: Optional[Mapping[str, Any]] = None) -> None:
+    """Initialize root logging with JSON formatter and rotating file; idempotent."""
+    cfg = _load_config(overrides=overrides)
+
+    root = logging.getLogger()
+    for h in root.handlers[:]:
+        with suppress(Exception):
+            h.flush()
+            h.close()
+        root.removeHandler(h)
+
+    # ensure log directory exists
+    log_path = Path(cfg["log_path"])
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # configure handlers
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_path,
+        maxBytes=cfg["rotate_size"],
+        backupCount=cfg["retention_count"],
+        encoding=cfg["encoding"],
+    )
+    stream_handler = logging.StreamHandler(sys.stdout)
+
+    formatter = jsonlogger.JsonFormatter(
+        fmt="%(asctime)s %(levelname)s %(name)s %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S%z",
+    )
+    file_handler.setFormatter(formatter)
+    stream_handler.setFormatter(formatter)
+
+    root.setLevel(cfg["level"])
+    root.addHandler(file_handler)
+    root.addHandler(stream_handler)
+
+    # flush and close handlers on exit
+    atexit.register(lambda: [h.close() for h in root.handlers])
+
+    return
+
+def get_logger(name: str) -> logging.Logger:
+    """Return a logger with contextual enrichment."""
+    logger = logging.getLogger(name)
+
+    class ContextFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            ctx = _context.get()
+            for key, val in ctx.items():
+                setattr(record, key, val)
+            return True
+
+    # Attach filter once
+    if not any(isinstance(f, ContextFilter) for f in logger.filters):
+        logger.addFilter(ContextFilter())
+
+    return logger
 
