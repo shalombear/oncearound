@@ -4,11 +4,8 @@ import sys
 import os
 
 import logging
-import json
 import atexit
 from contextvars import ContextVar
-
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Final, Literal, Mapping, Optional, TypedDict
 from contextlib import suppress
@@ -30,6 +27,14 @@ DEFAULT_RETENTION_COUNT: Final[int] = 10
 DEFAULT_ENCODING: Final[str] = "utf-8"
 
 _context: ContextVar[dict[str, Any]] = ContextVar("log_context", default={})
+
+def _shutdown_handlers() -> None:
+    root = logging.getLogger()
+    for h in root.handlers[:]:
+        with suppress(Exception):
+            h.flush()
+            h.close()
+        root.removeHandler(h)
 
 def _load_config(*, overrides: Optional[Mapping[str, Any]] = None) -> LoggerConfig:
     """Return merged logger configuration from defaults, env, and overrides."""
@@ -72,12 +77,7 @@ def init_logging(*, overrides: Optional[Mapping[str, Any]] = None) -> None:
     """Initialize root logging with JSON formatter and rotating file; idempotent."""
     cfg = _load_config(overrides=overrides)
 
-    root = logging.getLogger()
-    for h in root.handlers[:]:
-        with suppress(Exception):
-            h.flush()
-            h.close()
-        root.removeHandler(h)
+    _shutdown_handlers()
 
     # ensure log directory exists
     log_path = Path(cfg["log_path"])
@@ -104,7 +104,7 @@ def init_logging(*, overrides: Optional[Mapping[str, Any]] = None) -> None:
     root.addHandler(stream_handler)
 
     # flush and close handlers on exit
-    atexit.register(lambda: [h.close() for h in root.handlers])
+    atexit.register(_shutdown_handlers)
 
     return
 
@@ -124,4 +124,12 @@ def get_logger(name: str) -> logging.Logger:
         logger.addFilter(ContextFilter())
 
     return logger
+
+def bind_context(**fields: Any) -> None:
+    ctx = dict(_context.get())
+    ctx.update({k: v for k, v in fields.items() if v is not None})
+    _context.set(ctx)
+
+def clear_context() -> None:
+    _context.set({})
 
