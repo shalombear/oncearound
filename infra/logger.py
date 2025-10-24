@@ -1,17 +1,19 @@
 """Structured JSON logger for consistent, machine-readable application logging."""
-
 import sys
 import os
-
+import time
 import logging
 import atexit
+
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Final, Literal, Mapping, Optional, TypedDict
 from contextlib import suppress
+
 from pythonjsonlogger import jsonlogger
 
 Level = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+
 
 class LoggerConfig(TypedDict):
     level: Level
@@ -19,6 +21,14 @@ class LoggerConfig(TypedDict):
     rotate_size: int
     retention_count: int
     encoding: str
+
+
+class _ContextFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        ctx = _context.get()
+        if ctx:
+            record.context = dict(ctx)
+        return True
 
 DEFAULT_LOG_LEVEL: Final[Level] = "INFO"
 DEFAULT_LOG_PATH: Final[str] = "./logs/app.log"
@@ -76,7 +86,6 @@ def _load_config(*, overrides: Optional[Mapping[str, Any]] = None) -> LoggerConf
 def init_logging(*, overrides: Optional[Mapping[str, Any]] = None) -> None:
     """Initialize root logging with JSON formatter and rotating file; idempotent."""
     cfg = _load_config(overrides=overrides)
-
     _shutdown_handlers()
 
     # ensure log directory exists
@@ -85,7 +94,7 @@ def init_logging(*, overrides: Optional[Mapping[str, Any]] = None) -> None:
 
     # configure handlers
     file_handler = logging.handlers.RotatingFileHandler(
-        log_path,
+        filename=log_path,
         maxBytes=cfg["rotate_size"],
         backupCount=cfg["retention_count"],
         encoding=cfg["encoding"],
@@ -93,12 +102,14 @@ def init_logging(*, overrides: Optional[Mapping[str, Any]] = None) -> None:
     stream_handler = logging.StreamHandler(sys.stdout)
 
     formatter = jsonlogger.JsonFormatter(
-        fmt="%(asctime)s %(levelname)s %(name)s %(message)s",
-        datefmt="%Y-%m-%dT%H:%M:%S%z",
+        fmt="%(asctime)s %(levelname)s %(name)s %(message)s %(context)s",
+        datefmt="%Y-%m-%dT%H:%M:%SZ",
+        rename_fields={"asctime": "timestamp", "levelname": "level", "name": "logger"},
     )
     file_handler.setFormatter(formatter)
     stream_handler.setFormatter(formatter)
 
+    root = logging.getLogger()
     root.setLevel(cfg["level"])
     root.addHandler(file_handler)
     root.addHandler(stream_handler)
@@ -111,17 +122,8 @@ def init_logging(*, overrides: Optional[Mapping[str, Any]] = None) -> None:
 def get_logger(name: str) -> logging.Logger:
     """Return a logger with contextual enrichment."""
     logger = logging.getLogger(name)
-
-    class ContextFilter(logging.Filter):
-        def filter(self, record: logging.LogRecord) -> bool:
-            ctx = _context.get()
-            for key, val in ctx.items():
-                setattr(record, key, val)
-            return True
-
-    # Attach filter once
-    if not any(isinstance(f, ContextFilter) for f in logger.filters):
-        logger.addFilter(ContextFilter())
+    if not any(isinstance(f, _ContextFilter) for f in logger.filters):
+        logger.addFilter(_ContextFilter())
 
     return logger
 
@@ -132,4 +134,3 @@ def bind_context(**fields: Any) -> None:
 
 def clear_context() -> None:
     _context.set({})
-
